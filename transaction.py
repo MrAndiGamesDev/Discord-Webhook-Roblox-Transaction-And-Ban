@@ -2,7 +2,6 @@ import requests
 import time
 import json
 import os
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -69,7 +68,11 @@ def load_last_robux():
 
 def send_discord_notification(embed):
     """Send a notification to the Discord webhook."""
-    payload = {"embeds": [embed]}
+    payload = {
+        "embeds": [embed],
+        "username": "💰Roblox Transaction Info",
+        "avatar_url": "https://img.icons8.com/plasticine/2x/robux.png"
+    }
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
         response.raise_for_status()
@@ -79,28 +82,23 @@ def send_discord_notification(embed):
 def send_discord_notification_for_transactions(changes):
     """Send a notification to the Discord webhook for transaction data changes."""
     embed = {
-        "content": "",
         "username": "💰Roblox Transaction Info",
         "title": "🔔Roblox Transaction Data Changed!",
         "description": "The following changes were detected:",
         "fields": [{"name": key, "value": f"`{old}` → `{new}`", "inline": False} for key, (old, new) in changes.items()],
         "color": 720640,
-        "avatar_url": "https://img.icons8.com/plasticine/2x/robux.png",
     }
     send_discord_notification(embed)
 
 def send_discord_notification_for_robux(old_robux, new_robux):
     """Send a notification to the Discord webhook for Robux balance changes."""
     embed = {
-        "content": "",
-        "username": "💰Roblox Transaction Info",
         "title": "🔔Robux Balance Changed!",
         "description": f"**Robux:** `{old_robux}` → `{new_robux}`",
         "color": 720640,
         "footer": {
             "text": "Roblox Transactions Is Fetched From Roblox's API",
         },
-        "avatar_url": "https://img.icons8.com/plasticine/2x/robux.png"
     }
     send_discord_notification(embed)
 

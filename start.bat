@@ -17,7 +17,7 @@ REM Wait for 2 seconds before checking if the Python script exists
 timeout /t 2 /nobreak >nul
 
 REM Check if Python script exists before running
-set scripts=main.py transaction.py
+set scripts=ban.py transaction.py
 
 for %%s in (%scripts%) do (
     if exist "./%%s" (
