@@ -1,7 +1,11 @@
-import requests
-import time
-import json
 import os
+import asyncio
+import sqlite3
+import aiohttp
+import signal
+import sys
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,62 +16,97 @@ USERID = os.getenv("USERID")
 TRANSACTION_API_URL = f"https://economy.roblox.com/v2/users/{USERID}/transaction-totals?timeFrame=Year&transactionType=summary"
 CURRENCY_API_URL = f"https://economy.roblox.com/v1/users/{USERID}/currency"
 
-TRANSACTION_DATA_FILE = "last_transaction_data.json"
-ROBUX_FILE = "last_robux.json"
-
-AVATAR_URL = "https://img.icons8.com/plasticine/2x/robux.png"
-
+AVATAR_URL = "https://img.icons8.com/plasticine/2x/robux.png"  # Custom icon for Discord notification
 COOKIES = {
     '.ROBLOSECURITY': os.getenv("COOKIE"),
 }
 
-def load_json_file(file_path, default_data=None):
-    """Load JSON data from a file or return default data if the file doesn't exist."""
-    try:
-        with open(file_path, "r") as file:
-            return json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default_data
+# Timezone setup
+TIMEZONE = pytz.timezone("America/New_York")
 
-def save_json_file(file_path, data):
-    """Save JSON data to a file."""
-    with open(file_path, "w") as file:
-        json.dump(data, file, indent=4)
+# Graceful shutdown flag
+shutdown_flag = False
 
-def load_last_transaction_data():
-    """Load the last known transaction data from a file. Initialize with defaults if the file doesn't exist."""
-    default_data = {key: 0 for key in [
-        "salesTotal", "purchasesTotal", "affiliateSalesTotal", "groupPayoutsTotal",
-        "currencyPurchasesTotal", "premiumStipendsTotal", "tradeSystemEarningsTotal",
-        "tradeSystemCostsTotal", "premiumPayoutsTotal", "groupPremiumPayoutsTotal",
-        "adSpendTotal", "developerExchangeTotal", "pendingRobuxTotal", "incomingRobuxTotal",
-        "outgoingRobuxTotal", "individualToGroupTotal", "csAdjustmentTotal",
-        "adsRevsharePayoutsTotal", "groupAdsRevsharePayoutsTotal", "subscriptionsRevshareTotal",
-        "groupSubscriptionsRevshareTotal", "subscriptionsRevshareOutgoingTotal",
-        "groupSubscriptionsRevshareOutgoingTotal", "publishingAdvanceRebatesTotal",
-        "affiliatePayoutTotal"
-    ]}
-    return load_json_file(TRANSACTION_DATA_FILE, default_data)
+# Database setup
+DATABASE_PATH = "roblox_monitor.db"
 
-def load_last_robux():
-    """Load the last known Robux balance from a separate file."""
-    return load_json_file(ROBUX_FILE, {"robux": 0}).get("robux", 0)
+def init_db():
+    """Initialize SQLite database and create necessary tables."""
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transaction_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                salesTotal INTEGER, purchasesTotal INTEGER, affiliateSalesTotal INTEGER,
+                groupPayoutsTotal INTEGER, currencyPurchasesTotal INTEGER, premiumStipendsTotal INTEGER,
+                tradeSystemEarningsTotal INTEGER, tradeSystemCostsTotal INTEGER, premiumPayoutsTotal INTEGER,
+                groupPremiumPayoutsTotal INTEGER, adSpendTotal INTEGER, developerExchangeTotal INTEGER,
+                pendingRobuxTotal INTEGER, incomingRobuxTotal INTEGER, outgoingRobuxTotal INTEGER,
+                individualToGroupTotal INTEGER, csAdjustmentTotal INTEGER, adsRevsharePayoutsTotal INTEGER,
+                groupAdsRevsharePayoutsTotal INTEGER, subscriptionsRevshareTotal INTEGER,
+                groupSubscriptionsRevshareTotal INTEGER, subscriptionsRevshareOutgoingTotal INTEGER,
+                groupSubscriptionsRevshareOutgoingTotal INTEGER, publishingAdvanceRebatesTotal INTEGER,
+                affiliatePayoutTotal INTEGER
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS robux_balance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                robux INTEGER
+            )
+        """)
+        conn.commit()
 
-def send_discord_notification(embed):
+def signal_handler(signal, frame):
+    """Handle graceful shutdown."""
+    global shutdown_flag
+    print("Shutting down...")
+    shutdown_flag = True
+
+signal.signal(signal.SIGINT, signal_handler)
+
+async def load_last_data(table: str, columns: list):
+    """Load the last row of data from the given table and columns."""
+    query = f"SELECT * FROM {table} ORDER BY id DESC LIMIT 1"
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        row = cursor.fetchone()
+
+    if row:
+        return {columns[i]: row[i + 1] for i in range(len(columns))}
+    else:
+        return {column: 0 for column in columns}
+
+async def save_data(table: str, data: dict):
+    """Save data to the specified table."""
+    columns = ", ".join(data.keys())
+    placeholders = ", ".join(["?" for _ in data])
+    query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, tuple(data.values()))
+        conn.commit()
+
+async def send_discord_notification(embed: dict):
     """Send a notification to the Discord webhook."""
     payload = {
         "embeds": [embed],
         "username": "Roblox Transaction Info",
-        "avatar_url": f"{AVATAR_URL}"
+        "avatar_url": AVATAR_URL  # Include custom avatar URL
     }
-    try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending Discord notification: {e}")
 
-def send_discord_notification_for_changes(title, description, changes, footer):
-    """Send a notification to the Discord webhook for data changes."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30) as response:
+                response.raise_for_status()
+                print("Sent Discord notification successfully.")
+        except aiohttp.ClientError as e:
+            print(f"Error sending Discord notification: {e}")
+
+async def send_discord_notification_for_changes(title: str, description: str, changes: dict, footer: str):
+    """Send a notification for changes detected in transaction data."""
     fields = [{"name": key, "value": f"**{old}** → **{new}**", "inline": False} for key, (old, new) in changes.items()]
     embed = {
         "title": title,
@@ -78,65 +117,86 @@ def send_discord_notification_for_changes(title, description, changes, footer):
             "text": footer
         }
     }
-    send_discord_notification(embed)
+    await send_discord_notification(embed)
 
-def fetch_data(url):
-    """Fetch data from a given URL with cookies."""
-    try:
-        response = requests.get(url, cookies=COOKIES, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch data from {url}: {e}")
-        return None
+async def fetch_data(url: str):
+    """Fetch data from the provided URL."""
+    retries = 3
+    async with aiohttp.ClientSession() as session:
+        for _ in range(retries):
+            try:
+                async with session.get(url, cookies=COOKIES, timeout=30) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except aiohttp.ClientError as e:
+                print(f"Failed to fetch data from {url}: {e}")
+                await asyncio.sleep(5)
+    return None
 
-def fetch_transaction_data():
-    """Fetch transaction data from the API."""
-    return fetch_data(TRANSACTION_API_URL)
+async def fetch_transaction_data():
+    """Fetch transaction data."""
+    return await fetch_data(TRANSACTION_API_URL)
 
-def fetch_robux_balance():
-    """Fetch Robux balance from the currency API."""
-    return fetch_data(CURRENCY_API_URL).get("robux", 0)
+async def fetch_robux_balance():
+    """Fetch the current Robux balance."""
+    return (await fetch_data(CURRENCY_API_URL)).get("robux", 0)
 
-def monitor():
-    """Monitor the APIs for changes."""
-    last_transaction_data = load_last_transaction_data()
-    last_robux = load_last_robux()
+def get_current_time():
+    """Get the current time in the specified timezone (12-hour format)."""
+    return datetime.now(TIMEZONE).strftime('%m/%d/%Y %I:%M:%S %p')
 
-    while True:
-        current_transaction_data = fetch_transaction_data()
-        current_robux_balance = fetch_robux_balance()
+async def monitor():
+    """Monitor Roblox transaction and Robux data for changes."""
+    last_transaction_columns = [
+        "salesTotal", "purchasesTotal", "affiliateSalesTotal", "groupPayoutsTotal", "currencyPurchasesTotal",
+        "premiumStipendsTotal", "tradeSystemEarningsTotal", "tradeSystemCostsTotal", "premiumPayoutsTotal",
+        "groupPremiumPayoutsTotal", "adSpendTotal", "developerExchangeTotal", "pendingRobuxTotal", "incomingRobuxTotal",
+        "outgoingRobuxTotal", "individualToGroupTotal", "csAdjustmentTotal", "adsRevsharePayoutsTotal",
+        "groupAdsRevsharePayoutsTotal", "subscriptionsRevshareTotal", "groupSubscriptionsRevshareTotal",
+        "subscriptionsRevshareOutgoingTotal", "groupSubscriptionsRevshareOutgoingTotal", "publishingAdvanceRebatesTotal",
+        "affiliatePayoutTotal"
+    ]
+
+    last_transaction_data = await load_last_data("transaction_data", last_transaction_columns)
+    last_robux = await load_last_data("robux_balance", ["robux"])
+
+    while not shutdown_flag:
+        current_transaction_data, current_robux_balance = await asyncio.gather(
+            fetch_transaction_data(),
+            fetch_robux_balance()
+        )
 
         if current_transaction_data:
-            changes = {
-                key: (last_transaction_data.get(key), current_transaction_data[key])
-                for key in current_transaction_data
-                if current_transaction_data[key] != last_transaction_data.get(key)
-            }
+            changes = {key: (last_transaction_data.get(key), current_transaction_data[key])
+                       for key in current_transaction_data if current_transaction_data[key] != last_transaction_data.get(key)}
 
             if changes:
-                send_discord_notification_for_changes(
+                await send_discord_notification_for_changes(
                     "🔔Roblox Transaction Data Changed!",
-                    "The following changes were detected:",
+                    f"Changes detected at {get_current_time()}",
                     changes,
-                    ""
+                    f"Timestamp: {get_current_time()}"
                 )
                 last_transaction_data.update(current_transaction_data)
-                save_json_file(TRANSACTION_DATA_FILE, last_transaction_data)
+                await save_data("transaction_data", current_transaction_data)
 
-        if current_robux_balance != last_robux:
-            send_discord_notification_for_changes(
+        if current_robux_balance != last_robux['robux']:
+            await send_discord_notification_for_changes(
                 "🔔Robux Balance Changed!",
-                f"**Robux:** **{last_robux}** → **{current_robux_balance}**",
+                f"**Robux:** **{last_robux['robux']}** → **{current_robux_balance}**\n"
+                f"**Change detected at {get_current_time()}**",
                 {},
                 "Transaction Fetched From Roblox's API"
             )
-            last_robux = current_robux_balance
-            save_json_file(ROBUX_FILE, {"robux": last_robux})
+            last_robux['robux'] = current_robux_balance
+            await save_data("robux_balance", {"robux": last_robux['robux']})
 
-        time.sleep(60)  # Check every 60 seconds
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    while True:
-        monitor()  # Start monitoring without an infinite loop
-        time.sleep(10)
+    try:
+        init_db()
+        asyncio.run(monitor())
+    except KeyboardInterrupt:
+        print("Script interrupted by user. Exiting...")
+        sys.exit(0)

@@ -1,39 +1,88 @@
 import requests
 import time
 from datetime import datetime, timedelta
-import json
+import sqlite3
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class DiscordNotifier:
-    def __init__(self, webhook_url, roblox_security, api_url, last_data_file):
+    def __init__(self, webhook_url, roblox_security, api_url, db_path):
         self.webhook_url = webhook_url
         self.roblox_security = roblox_security
         self.api_url = api_url
-        self.last_data_file = last_data_file
+        self.db_path = db_path
         self.cookie = os.getenv("COOKIE")
         self.headers = {
             "Cookie": f"{self.roblox_security}{self.cookie}"
         }
+        self.init_db()  # Initialize database
+
+    def init_db(self):
+        """Initialize the SQLite database and create necessary tables."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(""" 
+                CREATE TABLE IF NOT EXISTS moderation_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    messageToUser TEXT,
+                    punishmentTypeDescription TEXT,
+                    beginDate TEXT,
+                    endDate TEXT,
+                    next_consequence_duration INTEGER,
+                    next_consequence_type TEXT,
+                    self_service_deactivated BOOLEAN,
+                    timestamp TEXT
+                )
+            """)
+            conn.commit()
 
     def load_last_data(self):
-        """Load the last known data from a file."""
-        try:
-            with open(self.last_data_file, "r") as file:
-                return json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
+        """Load the last known data from the database."""
+        query = "SELECT * FROM moderation_data ORDER BY timestamp DESC LIMIT 1"
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            row = cursor.fetchone()
+
+        if row:
+            return {
+                "messageToUser": row[1],
+                "punishmentTypeDescription": row[2],
+                "beginDate": row[3],
+                "endDate": row[4],
+                "next_consequence_duration": row[5],
+                "next_consequence_type": row[6],
+                "self_service_deactivated": row[7],
+                "timestamp": row[8]
+            }
+        else:
             print("Starting with no previous data.")
             return None
 
     def save_last_data(self, data):
-        """Save the current data to a file."""
-        try:
-            with open(self.last_data_file, "w") as file:
-                json.dump(data, file, indent=4)
-        except IOError as e:
-            print(f"Error saving data to file: {e}")
+        """Save the current data to the database."""
+        timestamp = datetime.now().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(""" 
+                INSERT INTO moderation_data (
+                    messageToUser, punishmentTypeDescription, beginDate, endDate, 
+                    next_consequence_duration, next_consequence_type, 
+                    self_service_deactivated, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get("messageToUser", "N/A"),
+                data.get("punishmentTypeDescription", "N/A"),
+                data.get("beginDate", "N/A"),
+                data.get("endDate", "N/A"),
+                data.get("context", {}).get("NEXT_CONSEQUENCE_DURATION", "N/A"),
+                data.get("context", {}).get("NEXT_CONSEQUENCE_TYPE", "N/A"),
+                data.get("context", {}).get("SelfServiceDeactivated", False),
+                timestamp
+            ))
+            conn.commit()
 
     @staticmethod
     def discord_timestamp(utc_time_str):
@@ -137,12 +186,12 @@ class DiscordNotifier:
             time.sleep(60)  # Check every minute
 
 if __name__ == "__main__":
-    # Replace with your Discord webhook URL, .ROBLOSECURITY cookie, and last data file path
+    # Replace with your Discord webhook URL, .ROBLOSECURITY cookie, and database path
     notifier = DiscordNotifier(
         webhook_url=os.getenv("WEBHOOKURL"),
         roblox_security=".ROBLOSECURITY=",
         api_url="https://usermoderation.roblox.com/v1/not-approved",
-        last_data_file="last_data.json"
+        db_path="moderation_data.db"  # SQLite database path
     )
     
     while True:  # Run forever

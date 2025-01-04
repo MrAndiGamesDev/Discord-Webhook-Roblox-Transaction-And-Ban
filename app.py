@@ -1,13 +1,19 @@
 import subprocess
 import tkinter as tk
 import os
+import sqlite3
+from datetime import datetime
 
 class RobloxTransactionApp:
     def __init__(self, master):
         self.master = master
-        self.appversion = "V0.1.0"
+        self.appversion = "V0.3.0"
         master.title(f"Roblox Transaction Monitor")
         master.geometry("400x300")  # Set a larger size for the GUI
+
+        # Initialize the database
+        self.db_path = "transaction_app.db"
+        self.init_db()
 
         self.label = tk.Label(master, text=f"Roblox Transaction Monitor {self.appversion}", font=("Arial", 16))
         self.label.pack(pady=10)
@@ -29,17 +35,76 @@ class RobloxTransactionApp:
 
         self.apply_theme()  # Apply the initial theme
 
+    def init_db(self):
+        """Initialize the SQLite database and create necessary tables."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Create monitoring status table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS monitoring_status (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status TEXT,
+                    timestamp TEXT
+                )
+            """)
+            # Create action log table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS action_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT,
+                    timestamp TEXT
+                )
+            """)
+            conn.commit()
+
+    def log_action(self, action):
+        """Log an action (start/stop) to the database."""
+        timestamp = datetime.now().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO action_log (action, timestamp)
+                VALUES (?, ?)
+            """, (action, timestamp))
+            conn.commit()
+
     def start_monitoring(self):
         if not self.monitoring:
             self.monitoring = True
             self.status_label.config(text="Status: Monitoring...")
-            subprocess.Popen(['python', 'ban.py'])
-            subprocess.Popen(['python', 'transaction.py'])
+            self.log_action("Started monitoring")
+
+            # List of script names to be monitored
+            scripts = ['ban.py', 'transaction.py']
+            
+            # Start monitoring each script using a for loop
+            for script in scripts:
+                subprocess.Popen(['python', script])
+
+            # Update monitoring status in database
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO monitoring_status (status, timestamp)
+                    VALUES (?, ?)
+                """, ("Monitoring", datetime.now().isoformat()))
+                conn.commit()
 
     def stop_monitoring(self):
         if self.monitoring:
             self.monitoring = False
             self.status_label.config(text="Status: Not Monitoring")
+            self.log_action("Stopped monitoring")
+
+            # Update monitoring status in database
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO monitoring_status (status, timestamp)
+                    VALUES (?, ?)
+                """, ("Not Monitoring", datetime.now().isoformat()))
+                conn.commit()
+
             self.master.quit()  # Exit the application
 
     def toggle_theme(self):

@@ -1,6 +1,6 @@
 @echo off
 REM Check if required packages are installed and up to date
-set packages=datetime discord discord.py requests tk
+set packages=datetime discord discord.py requests tk pytz timedelta python-dotenv
 set all_installed=true
 
 set OK=[OK]:
