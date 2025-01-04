@@ -44,7 +44,7 @@ class DiscordNotifier:
             # Parse the UTC time string, replacing 'Z' with '+00:00' for ISO format compatibility
             utc_time = datetime.fromisoformat(utc_time_str.replace("Z", "+00:00"))
             # Adjust to the desired timezone (UTC-05:00)
-            adjusted_time = utc_time + timedelta(hours=+1)
+            adjusted_time = utc_time + timedelta(hours=0)
             # Convert to a Unix timestamp
             unix_timestamp = int(adjusted_time.timestamp())
             # Return a relative time string for Discord and a formatted time
@@ -103,10 +103,10 @@ class DiscordNotifier:
         """Create a Discord embed from the moderation data."""
         return {
             "avatar_url": "https://www.pngmart.com/files/23/Ban-Hammer-PNG-179x200.png",
-            "username": "🔨Moderation Alert",
+            "username": "Moderation Alert",
             "embeds": [
                 {
-                    "title": "🔨Moderation Action Taken🔨",
+                    "title": "🔨Moderation Action Taken",
                     "color": 16711680,
                     "fields": [
                         {"name": "Message To User", "value": data.get("messageToUser", "N/A"), "inline": False},
@@ -144,4 +144,7 @@ if __name__ == "__main__":
         api_url="https://usermoderation.roblox.com/v1/not-approved",
         last_data_file="last_data.json"
     )
-    notifier.process_data()
+    
+    while True:  # Run forever
+        notifier.process_data()
+        time.sleep(10)  # Optional sleep to prevent tight looping

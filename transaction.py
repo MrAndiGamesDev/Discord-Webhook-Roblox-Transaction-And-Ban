@@ -15,51 +15,38 @@ CURRENCY_API_URL = f"https://economy.roblox.com/v1/users/{USERID}/currency"
 TRANSACTION_DATA_FILE = "last_transaction_data.json"
 ROBUX_FILE = "last_robux.json"
 
+AVATAR_URL = "https://img.icons8.com/plasticine/2x/robux.png"
+
 COOKIES = {
-    '.ROBLOSECURITY': os.getenv("Cookie"),
+    '.ROBLOSECURITY': os.getenv("COOKIE"),
 }
 
 def load_json_file(file_path, default_data=None):
     """Load JSON data from a file or return default data if the file doesn't exist."""
-    if os.path.exists(file_path):
+    try:
         with open(file_path, "r") as file:
             return json.load(file)
-    return default_data
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default_data
 
 def save_json_file(file_path, data):
     """Save JSON data to a file."""
     with open(file_path, "w") as file:
-        json.dump(data, file)
+        json.dump(data, file, indent=4)
 
 def load_last_transaction_data():
     """Load the last known transaction data from a file. Initialize with defaults if the file doesn't exist."""
-    default_data = {
-        "salesTotal": 0,
-        "purchasesTotal": 0,
-        "affiliateSalesTotal": 0,
-        "groupPayoutsTotal": 0,
-        "currencyPurchasesTotal": 0,
-        "premiumStipendsTotal": 0,
-        "tradeSystemEarningsTotal": 0,
-        "tradeSystemCostsTotal": 0,
-        "premiumPayoutsTotal": 0,
-        "groupPremiumPayoutsTotal": 0,
-        "adSpendTotal": 0,
-        "developerExchangeTotal": 0,
-        "pendingRobuxTotal": 0,
-        "incomingRobuxTotal": 0,
-        "outgoingRobuxTotal": 0,
-        "individualToGroupTotal": 0,
-        "csAdjustmentTotal": 0,
-        "adsRevsharePayoutsTotal": 0,
-        "groupAdsRevsharePayoutsTotal": 0,
-        "subscriptionsRevshareTotal": 0,
-        "groupSubscriptionsRevshareTotal": 0,
-        "subscriptionsRevshareOutgoingTotal": 0,
-        "groupSubscriptionsRevshareOutgoingTotal": 0,
-        "publishingAdvanceRebatesTotal": 0,
-        "affiliatePayoutTotal": 0,
-    }
+    default_data = {key: 0 for key in [
+        "salesTotal", "purchasesTotal", "affiliateSalesTotal", "groupPayoutsTotal",
+        "currencyPurchasesTotal", "premiumStipendsTotal", "tradeSystemEarningsTotal",
+        "tradeSystemCostsTotal", "premiumPayoutsTotal", "groupPremiumPayoutsTotal",
+        "adSpendTotal", "developerExchangeTotal", "pendingRobuxTotal", "incomingRobuxTotal",
+        "outgoingRobuxTotal", "individualToGroupTotal", "csAdjustmentTotal",
+        "adsRevsharePayoutsTotal", "groupAdsRevsharePayoutsTotal", "subscriptionsRevshareTotal",
+        "groupSubscriptionsRevshareTotal", "subscriptionsRevshareOutgoingTotal",
+        "groupSubscriptionsRevshareOutgoingTotal", "publishingAdvanceRebatesTotal",
+        "affiliatePayoutTotal"
+    ]}
     return load_json_file(TRANSACTION_DATA_FILE, default_data)
 
 def load_last_robux():
@@ -70,8 +57,8 @@ def send_discord_notification(embed):
     """Send a notification to the Discord webhook."""
     payload = {
         "embeds": [embed],
-        "username": "💰Roblox Transaction Info",
-        "avatar_url": "https://img.icons8.com/plasticine/2x/robux.png"
+        "username": "Roblox Transaction Info",
+        "avatar_url": f"{AVATAR_URL}"
     }
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
@@ -79,26 +66,17 @@ def send_discord_notification(embed):
     except requests.exceptions.RequestException as e:
         print(f"Error sending Discord notification: {e}")
 
-def send_discord_notification_for_transactions(changes):
-    """Send a notification to the Discord webhook for transaction data changes."""
+def send_discord_notification_for_changes(title, description, changes, footer):
+    """Send a notification to the Discord webhook for data changes."""
+    fields = [{"name": key, "value": f"**{old}** → **{new}**", "inline": False} for key, (old, new) in changes.items()]
     embed = {
-        "username": "💰Roblox Transaction Info",
-        "title": "🔔Roblox Transaction Data Changed!",
-        "description": "The following changes were detected:",
-        "fields": [{"name": key, "value": f"`{old}` → `{new}`", "inline": False} for key, (old, new) in changes.items()],
-        "color": 720640,
-    }
-    send_discord_notification(embed)
-
-def send_discord_notification_for_robux(old_robux, new_robux):
-    """Send a notification to the Discord webhook for Robux balance changes."""
-    embed = {
-        "title": "🔔Robux Balance Changed!",
-        "description": f"**Robux:** `{old_robux}` → `{new_robux}`",
+        "title": title,
+        "description": description,
+        "fields": fields,
         "color": 720640,
         "footer": {
-            "text": "Roblox Transactions Is Fetched From Roblox's API",
-        },
+            "text": footer
+        }
     }
     send_discord_notification(embed)
 
@@ -137,18 +115,28 @@ def monitor():
             }
 
             if changes:
-                # print(f"Detected changes in transactions: {changes}")
-                send_discord_notification_for_transactions(changes)
+                send_discord_notification_for_changes(
+                    "🔔Roblox Transaction Data Changed!",
+                    "The following changes were detected:",
+                    changes,
+                    ""
+                )
                 last_transaction_data.update(current_transaction_data)
                 save_json_file(TRANSACTION_DATA_FILE, last_transaction_data)
 
         if current_robux_balance != last_robux:
-            # print(f"Detected changes in Robux balance: {last_robux} → {current_robux_balance}")
-            send_discord_notification_for_robux(last_robux, current_robux_balance)
+            send_discord_notification_for_changes(
+                "🔔Robux Balance Changed!",
+                f"**Robux:** **{last_robux}** → **{current_robux_balance}**",
+                {},
+                "Transaction Fetched From Roblox's API"
+            )
             last_robux = current_robux_balance
             save_json_file(ROBUX_FILE, {"robux": last_robux})
 
         time.sleep(60)  # Check every 60 seconds
 
 if __name__ == "__main__":
-    monitor()
+    while True:
+        monitor()  # Start monitoring without an infinite loop
+        time.sleep(10)

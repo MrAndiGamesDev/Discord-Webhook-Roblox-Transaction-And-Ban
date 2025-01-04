@@ -1,4 +1,5 @@
-datetime
-discord
-discord.py
-requests
+datetime==4.3
+discord==2.0.1
+discord.py==1.7.3
+requests==2.26.0
+tk==8.6.14
