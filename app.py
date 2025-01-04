@@ -3,6 +3,9 @@ import tkinter as tk
 import os
 import sqlite3
 from datetime import datetime
+import requests
+import io
+import sys
 
 class RobloxTransactionApp:
     def __init__(self, master):
@@ -11,8 +14,12 @@ class RobloxTransactionApp:
         master.title(f"Roblox Transaction Monitor")
         master.geometry("400x300")  # Set a larger size for the GUI
 
-        # Initialize the database
+        # GitHub repository information
+        self.github_repo = "MrAndiGamesDev/Roblox-Transaction-And-Ban-Monitor-Application"  # Change this to your GitHub username/repository
+        self.latest_version_url = f"https://api.github.com/repos/{self.github_repo}/releases/latest"
         self.db_path = "transaction_app.db"
+        
+        # Initialize the database
         self.init_db()
 
         self.label = tk.Label(master, text=f"Roblox Transaction Monitor {self.appversion}", font=("Arial", 16))
@@ -27,6 +34,9 @@ class RobloxTransactionApp:
         self.theme_button = tk.Button(master, text="Toggle Theme", command=self.toggle_theme, width=20, font=("Arial", 12), relief="raised")
         self.theme_button.pack(pady=5)
 
+        self.update_button = tk.Button(master, text="Check for Updates", command=self.check_for_updates, width=20, font=("Arial", 12), relief="raised")
+        self.update_button.pack(pady=5)
+
         self.status_label = tk.Label(master, text="Status: Not Monitoring", font=("Arial", 12))
         self.status_label.pack(pady=10)
 
@@ -39,7 +49,6 @@ class RobloxTransactionApp:
         """Initialize the SQLite database and create necessary tables."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # Create monitoring status table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS monitoring_status (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +56,6 @@ class RobloxTransactionApp:
                     timestamp TEXT
                 )
             """)
-            # Create action log table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS action_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,7 +104,6 @@ class RobloxTransactionApp:
             self.status_label.config(text="Status: Not Monitoring")
             self.log_action("Stopped monitoring")
 
-            # Update monitoring status in database
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -140,6 +147,54 @@ class RobloxTransactionApp:
         self.start_button.config(bg=button_bg, fg=button_fg)
         self.stop_button.config(bg=button_bg, fg=button_fg)
         self.theme_button.config(bg=button_bg, fg=button_fg)
+        self.update_button.config(bg=button_bg, fg=button_fg)
+
+    def check_for_updates(self):
+        """Check for updates from GitHub and download the latest version if available."""
+        try:
+            # Get the latest release info from GitHub
+            response = requests.get(self.latest_version_url)
+            response.raise_for_status()
+            release_data = response.json()
+
+            latest_version = release_data['tag_name']
+            download_url = release_data['assets'][0]['browser_download_url']
+
+            # Check if the current version is older than the latest release
+            if latest_version != self.appversion:
+                print(f"New version found: {latest_version}. Updating...")
+
+                # Download and update the application
+                self.download_and_update(download_url)
+
+            else:
+                print("You are using the latest version.")
+
+        except Exception as e:
+            print(f"Error checking for updates: {e}")
+
+    def download_and_update(self, download_url):
+        """Download the new version from GitHub and restart the app."""
+        try:
+            # Download the latest release file (direct file download)
+            response = requests.get(download_url)
+            response.raise_for_status()
+
+            # Determine the name of the file to replace
+            app_filename = __file__  # This will give the current script path
+
+            # Write the content to the current file
+            with open(app_filename, "wb") as file:
+                file.write(response.content)
+
+            print("Update complete. Restarting the application...")
+
+            # Restart the application
+            self.master.quit()
+            subprocess.Popen([sys.executable, app_filename])  # Restart the current script
+
+        except Exception as e:
+            print(f"Error updating the application: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
