@@ -1,25 +1,31 @@
 import os
 import asyncio
-import sqlite3
 import aiohttp
 import signal
 import sys
+import json
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
+import tkinter as tk
+from tkinter import messagebox
+from threading import Thread
+from alive_progress import alive_bar
 
+# Load environment variables
 load_dotenv()
 
-# Configuration
-DISCORD_WEBHOOK_URL = os.getenv("WEBHOOKURL2")
-USERID = os.getenv("USERID")
-TRANSACTION_API_URL = f"https://economy.roblox.com/v2/users/{USERID}/transaction-totals?timeFrame=Year&transactionType=summary"
-CURRENCY_API_URL = f"https://economy.roblox.com/v1/users/{USERID}/currency"
+# Configuration (initially empty)
+DISCORD_WEBHOOK_URL = ""
+USERID = ""
+COOKIES = {}
+
+TRANSACTION_API_URL = ""
+CURRENCY_API_URL = ""
 
 AVATAR_URL = "https://img.icons8.com/plasticine/2x/robux.png"  # Custom icon for Discord notification
-COOKIES = {
-    '.ROBLOSECURITY': os.getenv("COOKIE"),
-}
+
+UPDATEEVERY = 60  # Monitor interval
 
 # Timezone setup
 TIMEZONE = pytz.timezone("America/New_York")
@@ -27,35 +33,9 @@ TIMEZONE = pytz.timezone("America/New_York")
 # Graceful shutdown flag
 shutdown_flag = False
 
-# Database setup
-DATABASE_PATH = "roblox_monitor.db"
-
-def init_db():
-    """Initialize SQLite database and create necessary tables."""
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS transaction_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                salesTotal INTEGER, purchasesTotal INTEGER, affiliateSalesTotal INTEGER,
-                groupPayoutsTotal INTEGER, currencyPurchasesTotal INTEGER, premiumStipendsTotal INTEGER,
-                tradeSystemEarningsTotal INTEGER, tradeSystemCostsTotal INTEGER, premiumPayoutsTotal INTEGER,
-                groupPremiumPayoutsTotal INTEGER, adSpendTotal INTEGER, developerExchangeTotal INTEGER,
-                pendingRobuxTotal INTEGER, incomingRobuxTotal INTEGER, outgoingRobuxTotal INTEGER,
-                individualToGroupTotal INTEGER, csAdjustmentTotal INTEGER, adsRevsharePayoutsTotal INTEGER,
-                groupAdsRevsharePayoutsTotal INTEGER, subscriptionsRevshareTotal INTEGER,
-                groupSubscriptionsRevshareTotal INTEGER, subscriptionsRevshareOutgoingTotal INTEGER,
-                groupSubscriptionsRevshareOutgoingTotal INTEGER, publishingAdvanceRebatesTotal INTEGER,
-                affiliatePayoutTotal INTEGER
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS robux_balance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                robux INTEGER
-            )
-        """)
-        conn.commit()
+# JSON storage paths
+TRANSACTION_DATA_PATH = "transaction_data.json"
+ROBUX_BALANCE_PATH = "robux_balance.json"
 
 def signal_handler(signal, frame):
     """Handle graceful shutdown."""
@@ -65,36 +45,28 @@ def signal_handler(signal, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-async def load_last_data(table: str, columns: list):
-    """Load the last row of data from the given table and columns."""
-    query = f"SELECT * FROM {table} ORDER BY id DESC LIMIT 1"
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(query)
-        row = cursor.fetchone()
+def load_json_data(filepath, default_data):
+    """Load data from a JSON file."""
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as file:
+            return json.load(file)
+    return default_data
 
-    if row:
-        return {columns[i]: row[i + 1] for i in range(len(columns))}
-    else:
-        return {column: 0 for column in columns}
+def save_json_data(filepath, data):
+    """Save data to a JSON file."""
+    with open(filepath, 'w') as file:
+        json.dump(data, file, indent=4)
 
-async def save_data(table: str, data: dict):
-    """Save data to the specified table."""
-    columns = ", ".join(data.keys())
-    placeholders = ", ".join(["?" for _ in data])
-    query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, tuple(data.values()))
-        conn.commit()
+def get_current_time():
+    """Get the current time in the specified timezone (12-hour format)."""
+    return datetime.now(TIMEZONE).strftime('%m/%d/%Y %I:%M:%S %p')
 
 async def send_discord_notification(embed: dict):
     """Send a notification to the Discord webhook."""
     payload = {
         "embeds": [embed],
         "username": "Roblox Transaction Info",
-        "avatar_url": AVATAR_URL  # Include custom avatar URL
+        "avatar_url": AVATAR_URL
     }
 
     async with aiohttp.ClientSession() as session:
@@ -137,66 +109,141 @@ async def fetch_transaction_data():
     """Fetch transaction data."""
     return await fetch_data(TRANSACTION_API_URL)
 
+
 async def fetch_robux_balance():
     """Fetch the current Robux balance."""
-    return (await fetch_data(CURRENCY_API_URL)).get("robux", 0)
+    response = await fetch_data(CURRENCY_API_URL)
+    return response.get("robux", 0) if response else 0
 
-def get_current_time():
-    """Get the current time in the specified timezone (12-hour format)."""
-    return datetime.now(TIMEZONE).strftime('%m/%d/%Y %I:%M:%S %p')
-
-async def monitor():
+async def monitor(gui_vars):
     """Monitor Roblox transaction and Robux data for changes."""
-    last_transaction_columns = [
-        "salesTotal", "purchasesTotal", "affiliateSalesTotal", "groupPayoutsTotal", "currencyPurchasesTotal",
-        "premiumStipendsTotal", "tradeSystemEarningsTotal", "tradeSystemCostsTotal", "premiumPayoutsTotal",
-        "groupPremiumPayoutsTotal", "adSpendTotal", "developerExchangeTotal", "pendingRobuxTotal", "incomingRobuxTotal",
-        "outgoingRobuxTotal", "individualToGroupTotal", "csAdjustmentTotal", "adsRevsharePayoutsTotal",
-        "groupAdsRevsharePayoutsTotal", "subscriptionsRevshareTotal", "groupSubscriptionsRevshareTotal",
-        "subscriptionsRevshareOutgoingTotal", "groupSubscriptionsRevshareOutgoingTotal", "publishingAdvanceRebatesTotal",
-        "affiliatePayoutTotal"
-    ]
+    last_transaction_data = load_json_data(TRANSACTION_DATA_PATH, {})
+    last_robux_balance = load_json_data(ROBUX_BALANCE_PATH, {"robux": 0})
 
-    last_transaction_data = await load_last_data("transaction_data", last_transaction_columns)
-    last_robux = await load_last_data("robux_balance", ["robux"])
+    iteration_count = 0
 
-    while not shutdown_flag:
-        current_transaction_data, current_robux_balance = await asyncio.gather(
-            fetch_transaction_data(),
-            fetch_robux_balance()
-        )
+    # Using alive_bar with indefinite progress tracking
+    with alive_bar(title="Monitoring Roblox Data", spinner="dots_waves") as bar:
+        while not shutdown_flag:
+            iteration_count += 1
 
-        if current_transaction_data:
-            changes = {key: (last_transaction_data.get(key), current_transaction_data[key])
-                       for key in current_transaction_data if current_transaction_data[key] != last_transaction_data.get(key)}
-
-            if changes:
-                await send_discord_notification_for_changes(
-                    "🔔Roblox Transaction Data Changed!",
-                    f"Changes detected at {get_current_time()}",
-                    changes,
-                    f"Timestamp: {get_current_time()}"
-                )
-                last_transaction_data.update(current_transaction_data)
-                await save_data("transaction_data", current_transaction_data)
-
-        if current_robux_balance != last_robux['robux']:
-            await send_discord_notification_for_changes(
-                "🔔Robux Balance Changed!",
-                f"**Robux:** **{last_robux['robux']}** → **{current_robux_balance}**\n"
-                f"**Change detected at {get_current_time()}**",
-                {},
-                "Transaction Fetched From Roblox's API"
+            # Fetch transaction and balance data concurrently
+            current_transaction_data, current_robux_balance = await asyncio.gather(
+                fetch_transaction_data(),
+                fetch_robux_balance()
             )
-            last_robux['robux'] = current_robux_balance
-            await save_data("robux_balance", {"robux": last_robux['robux']})
 
-        await asyncio.sleep(60)
+            # Update the GUI with the current balance
+            gui_vars["robux_balance"].set(f"Current Robux Balance: {current_robux_balance}")
+
+            # Check for changes in transaction data
+            if current_transaction_data:
+                changes = {
+                    key: (last_transaction_data.get(key, 0), current_transaction_data[key])
+                    for key in current_transaction_data if current_transaction_data[key] != last_transaction_data.get(key, 0)
+                }
+
+                if changes:
+                    await send_discord_notification_for_changes(
+                        "\U0001F514 Roblox Transaction Data Changed!",
+                        f"Changes detected at {get_current_time()}",
+                        changes,
+                        f"Timestamp: {get_current_time()}"
+                    )
+                    last_transaction_data.update(current_transaction_data)
+                    save_json_data(TRANSACTION_DATA_PATH, last_transaction_data)
+
+            # Check for changes in Robux balance
+            robux_change = current_robux_balance - last_robux_balance['robux']
+            if robux_change != 0:
+                color = 0x00FF00 if robux_change > 0 else 0xFF0000  # Green for gain, Red for spent
+                change_type = "gained" if robux_change > 0 else "spent"
+                await send_discord_notification({
+                    "title": "\U0001F4B8 Robux Balance Update",
+                    "description": f"You have **{change_type}** Robux.",
+                    "fields": [
+                        {"name": "Previous Balance", "value": f"**{last_robux_balance['robux']}**", "inline": True},
+                        {"name": "Current Balance", "value": f"**{current_robux_balance}**", "inline": True},
+                        {"name": "Change", "value": f"**{'+' if robux_change > 0 else ''}{robux_change}**", "inline": True}
+                    ],
+                    "color": color,
+                    "footer": {"text": f"Change detected at {get_current_time()}"}
+                })
+
+                last_robux_balance['robux'] = current_robux_balance
+                save_json_data(ROBUX_BALANCE_PATH, last_robux_balance)
+
+            # Increment alive_bar to show activity
+            bar()
+
+            await asyncio.sleep(UPDATEEVERY)
+
+def start_monitoring(gui_vars):
+    """Start monitoring in a separate thread to avoid blocking the GUI."""
+    global DISCORD_WEBHOOK_URL, USERID, COOKIES, TRANSACTION_API_URL, CURRENCY_API_URL
+
+    # Get the values from the input fields
+    DISCORD_WEBHOOK_URL = gui_vars["discord_webhook"].get()
+    USERID = gui_vars["user_id"].get()
+    COOKIES['.ROBLOSECURITY'] = gui_vars["roblox_cookies"].get()
+
+    # Update the API URLs
+    TRANSACTION_API_URL = f"https://economy.roblox.com/v2/users/{USERID}/transaction-totals?timeFrame=Year&transactionType=summary"
+    CURRENCY_API_URL = f"https://economy.roblox.com/v1/users/{USERID}/currency"
+
+    # Validate inputs
+    if not DISCORD_WEBHOOK_URL or not USERID or not COOKIES['.ROBLOSECURITY']:
+        messagebox.showerror("Error", "Please fill in all the fields!")
+        return
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(monitor(gui_vars))
+
+def create_gui():
+    """Create the GUI window and components."""
+    root = tk.Tk()
+    root.title("Roblox Monitoring")
+
+    gui_vars = {
+        "robux_balance": tk.StringVar(value="Current Robux Balance: 0"),
+        "discord_webhook": tk.StringVar(),
+        "user_id": tk.StringVar(),
+        "roblox_cookies": tk.StringVar()
+    }
+
+    # Discord Webhook input field
+    tk.Label(root, text="Discord Webhook URL").pack(pady=5)
+    discord_webhook_entry = tk.Entry(root, textvariable=gui_vars["discord_webhook"], width=50)
+    discord_webhook_entry.pack(pady=5)
+
+    # User ID input field
+    tk.Label(root, text="Roblox User ID").pack(pady=5)
+    user_id_entry = tk.Entry(root, textvariable=gui_vars["user_id"], width=50)
+    user_id_entry.pack(pady=5)
+
+    # Roblox Cookies input field
+    tk.Label(root, text="Roblox Cookies").pack(pady=5)
+    roblox_cookies_entry = tk.Entry(root, textvariable=gui_vars["roblox_cookies"], width=50)
+    roblox_cookies_entry.pack(pady=5)
+
+    # Robux balance label
+    robux_label = tk.Label(root, textvariable=gui_vars["robux_balance"], font=("Arial", 14))
+    robux_label.pack(pady=20)
+
+    # Start button
+    start_button = tk.Button(root, text="Start Monitoring", command=lambda: Thread(target=start_monitoring, args=(gui_vars,)).start())
+    start_button.pack(pady=10)
+
+    # Stop button
+    stop_button = tk.Button(root, text="Stop Monitoring", command=root.quit)
+    stop_button.pack(pady=10)
+
+    root.mainloop()
 
 if __name__ == "__main__":
     try:
-        init_db()
-        asyncio.run(monitor())
+        create_gui()
     except KeyboardInterrupt:
         print("Script interrupted by user. Exiting...")
         sys.exit(0)
